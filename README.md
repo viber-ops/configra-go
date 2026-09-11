@@ -2,8 +2,8 @@
 
 **Read Configra configuration from Go, without writing your own TLS setup.**
 
-[Configra](https://viber-ops.github.io/configra/) ·
-[SDK guide](https://viber-ops.github.io/docs/configra/go-sdk/) ·
+[Configra](https://viber-ops.github.io/en/configra/) ·
+[SDK guide](https://viber-ops.github.io/en/docs/configra/go-sdk/) ·
 [Service repository](https://github.com/viber-ops/configra) · [中文](README.zh-CN.md)
 
 Use this SDK when a Go application needs resolved YAML/JSON, Vault file bytes,
@@ -92,7 +92,7 @@ during client construction.
 Cold-start failure has no old snapshot. OnChange runs **after** the SDK installs
 a parsed snapshot, and callback failure does not roll it back. Validate and
 atomically replace your own application state. See the
-[Viper guide](https://viber-ops.github.io/docs/configra/go-sdk/#viper-快照与热更新).
+[Viper guide](https://viber-ops.github.io/en/docs/configra/go-sdk/#viper-snapshots-and-live-updates).
 
 Credential files are loaded once. Rebuild the client to adopt new files, or use
 the advanced `TLSConfig.GetClientCertificate` callback for live rotation and call
@@ -110,3 +110,9 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 Configra's service and Kubernetes integration suites additionally exercise the
 machine-read protocol over HTTPS/mTLS. Permissions remain Environment-wide;
 the SDK does not add resource-level authorization.
+
+## License
+
+Original project source is licensed under [Apache-2.0](LICENSE). Third-party
+components retain their own licenses and notices. See [CONTRIBUTING.md](CONTRIBUTING.md)
+and [SECURITY.md](SECURITY.md) for contributions and private vulnerability reports.
