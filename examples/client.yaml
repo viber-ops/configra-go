@@ -1,0 +1,9 @@
+# Connection settings only. Keep real tokens and private keys out of source control.
+# Paths are relative to this YAML file; adapt them to your deployment.
+url: https://configra-api.example.internal:9443
+token_file: /run/secrets/configra-token
+cert_file: /run/secrets/client.crt
+key_file: /run/secrets/client.key
+# Omit for a server certificate issued by a publicly trusted CA:
+server_ca_file: /run/secrets/server-ca.crt
+# Omit key_file when cert_file is a combined certificate + private-key PEM.
