@@ -60,3 +60,8 @@ key_file: /run/secrets/client.key
 凭据文件在初始化时加载一次。变更后重建 Client，或使用高级证书回调实现在线轮换。构造 Client 不会自动启动 Watch 或其他后台循环。
 
 [完整示例](https://github.com/viber-ops/configra-go/blob/v0.1.0-rc.1/examples/basic/main.go) · [初始化、读取与 Viper 指南](https://viber-ops.github.io/docs/configra/go-sdk/)
+
+## 许可证
+
+项目原创代码采用 [Apache-2.0](LICENSE)，第三方组件保留各自的许可证与声明。
+贡献方式见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请通过 [SECURITY.md](SECURITY.md) 中的私密渠道报告。
