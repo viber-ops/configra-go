@@ -1,103 +1,112 @@
 # configra-go
 
-`configra-go` is the Configra V1 Go client. It reads the final Resolved Config or exact
-File bytes over HTTPS and keeps Viper snapshots in process memory only.
+**Read Configra configuration from Go, without writing your own TLS setup.**
 
-Install the V1 module with Go 1.25.13 or newer:
+[Configra](https://viber-ops.github.io/configra/) ·
+[SDK guide](https://viber-ops.github.io/docs/configra/go-sdk/) ·
+[Service repository](https://github.com/viber-ops/configra) · [中文](README.zh-CN.md)
+
+Use this SDK when a Go application needs resolved YAML/JSON, Vault file bytes,
+or a periodically refreshed Viper snapshot. The service resolves sensitive-value
+references before returning configuration; the client does not need to resolve them.
+
+> **Preview: v0.1.0-rc.1.** Install the tag below for these initialization helpers;
+> the feature PR remains under review. Go 1.25.13+ is required.
 
 ```sh
-go get github.com/viber-ops/configra-go@latest
+go get github.com/viber-ops/configra-go@v0.1.0-rc.1
 ```
 
-If the repository is private, authenticate Git with GitHub and add
-`github.com/viber-ops/*` to your existing `GOPRIVATE` patterns before installing.
+## Start with your deployment's settings
 
-Vault Items are addressed by their immutable `(namespace, item)` identity. Config
-references use `{vault.<namespace>.<item>.<field>}`; the client intentionally has no
-legacy three-segment or implicit-default Namespace mode.
+```go
+client, err := configra.NewClientFromEnv()
+if err != nil {
+    return err
+}
+defer client.CloseIdleConnections()
 
-Put references in the Config document managed by Configra, not in the application's
-local cold-start YAML. A reference must occupy the complete YAML/JSON scalar and inherits
-the Config's Environment:
+result, err := client.ReadResolvedConfig(ctx, "production", "payment", "")
+if err != nil {
+    return err
+}
+// Parse result.Content into your application model. Do not log secret-bearing content.
+```
+
+Import `github.com/viber-ops/configra-go`; `ctx` is your application's context.
+The SDK handles certificate loading, HTTPS verification, timeouts and connection
+pooling. [Complete runnable example](https://github.com/viber-ops/configra-go/blob/v0.1.0-rc.1/examples/basic/main.go).
+
+Your deployment provides `CONFIGRA_URL` and either `CONFIGRA_TOKEN` or
+`CONFIGRA_TOKEN_FILE`. For mTLS, provide `CONFIGRA_CLIENT_CERT` and
+`CONFIGRA_CLIENT_KEY`; omit the key path when the certificate PEM also contains
+the private key. `CONFIGRA_SERVER_CA` is only needed for an internal server CA.
+There is **no mandatory credential directory**.
+
+## Three entry points, one configuration model
+
+| Your application already uses | Initialize with |
+| --- | --- |
+| Container environment / Secret mounts | `configra.NewClientFromEnv()` |
+| A deployment settings file | `configra.NewClientFromFile("configra.yaml")` |
+| Its own config system or in-memory values | `configra.NewClient(configra.ClientOptions{...})` |
+
+A client settings file can reference existing files without putting secrets in YAML:
 
 ```yaml
-database:
-  username: "{vault.platform.mysql.username}"
-  password: "{vault.platform.mysql.password}"
+url: https://configra-api.example.internal:9443
+token_file: /run/secrets/configra-token
+cert_file: /run/secrets/client.crt
+key_file: /run/secrets/client.key
+# server_ca_file: /run/secrets/server-ca.crt # only for an internal server CA
 ```
 
-Text and Secret Fields resolve to their current values before the client receives the
-document. V1 does not support historical `@vN` references or interpolation inside a
-larger string. File Fields are read separately with `ReadFile`.
+File paths can be anywhere; relative paths resolve next to the YAML file.
+The file loader rejects unknown keys and multiple documents. It does not silently
+merge environment settings or expand shell variables. `Token` and `TokenFile`
+are mutually exclusive. File-based TLS options cannot be mixed with `TLSConfig`.
+
+For an application that already owns its settings:
 
 ```go
 client, err := configra.NewClient(configra.ClientOptions{
-    BaseURL:   "https://configra-api.example.internal:9443",
-    Token:     os.Getenv("CONFIGRA_TOKEN"),
-    TLSConfig: tlsConfig, // cloned by the client
+    BaseURL:               apiURL,
+    Token:                 token,
+    ClientCertificateFile: "client.pem", // combined certificate + private key
 })
-if err != nil {
-    return err
-}
-
-var applicationConfig atomic.Pointer[ApplicationConfig]
-apply := func(snapshot *configra.Snapshot) error {
-    next := new(ApplicationConfig)
-    if err := snapshot.Unmarshal(next); err != nil {
-        return err
-    }
-    applicationConfig.Store(next)
-    return nil
-}
-
-handler, err := configra.NewViperHandler(configra.ViperHandlerOptions{
-    Client:      client,
-    Environment: "production",
-    Config:      "payment",
-    OnChange: func(ctx context.Context, previous, current *configra.Snapshot) error {
-        return apply(current)
-    },
-    OnError: func(err error) {
-        logger.Warn("Configra reload failed", zap.Error(err))
-    },
-})
-if err != nil {
-    return err
-}
-
-snapshot, err := handler.Load(ctx)
-if err != nil { // cold start has no Last-known-good and must fail
-    return err
-}
-if err := apply(snapshot); err != nil {
-    return err
-}
-go func() { _ = handler.Watch(ctx) }()
-
-file, err := client.ReadFile(ctx, "production", "platform", "mysql", "tls_cert", "")
 ```
 
-For mTLS, set `tls.Config.GetClientCertificate`; the client clones and preserves that
-callback so the application can rotate certificates at runtime. After atomically replacing
-the certificate returned by the callback, call `client.CloseIdleConnections()` so the next
-request performs a new TLS handshake. An API Token that allows Token-only Authentication
-may omit a client certificate, but HTTPS server verification is always required.
+The server address and Token cannot be inferred from a client certificate.
+Only Tokens explicitly permitting Token-only access may omit mTLS; HTTPS server
+verification is always enforced. Defaults are a 30-second request timeout and
+a 5 MiB content limit. `CONFIGRA_TIMEOUT`, YAML `timeout`, or `ClientOptions.Timeout`
+can customize the timeout; other advanced controls stay in `ClientOptions`.
 
-`Load` installs the initial snapshot without a callback. `Reload` and `Watch` send the
-current ETag, retain the Last-known-good after fetch or parse failure, install changed
-snapshots atomically, and then invoke `OnChange` serially. Callback failure does not roll
-back an installed snapshot. `Watch` defaults to 30 seconds with jitter, rejects intervals
-below 5 seconds, and backs repeated failures off to at most 5 minutes. An unchanged Reload
-may complete while a callback is running; a changed overlapping Reload returns
-`ErrReloadRunning` without installing another snapshot, so callbacks never overlap.
+## Files and live configuration
+
+`ReadFile(ctx, environment, namespace, item, field, etag)` returns exact bytes.
+`NewViperHandler` adds Load/Reload/Watch with ETag polling, jitter and in-memory
+last-known-good snapshots. Watch is opt-in; it does not start background work
+during client construction.
+
+Cold-start failure has no old snapshot. OnChange runs **after** the SDK installs
+a parsed snapshot, and callback failure does not roll it back. Validate and
+atomically replace your own application state. See the
+[Viper guide](https://viber-ops.github.io/docs/configra/go-sdk/#viper-快照与热更新).
+
+Credential files are loaded once. Rebuild the client to adopt new files, or use
+the advanced `TLSConfig.GetClientCertificate` callback for live rotation and call
+`CloseIdleConnections()` after replacing the identity. The SDK has its own HTTP
+transport, independent of `http.DefaultTransport`.
 
 ## Verify
 
 ```sh
-go test -race -count=1 ./...
+go test -race ./...
 go vet ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 ```
 
-The Configra service repository additionally exercises this module against the
-production scratch image over real HTTPS/mTLS, MySQL 8.0.22, NATS, and ClickHouse.
+Configra's service and Kubernetes integration suites additionally exercise the
+machine-read protocol over HTTPS/mTLS. Permissions remain Environment-wide;
+the SDK does not add resource-level authorization.
