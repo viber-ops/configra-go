@@ -21,6 +21,54 @@ import (
 	"time"
 )
 
+type replacedDefaultTransport struct{}
+
+func (replacedDefaultTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unrelated application transport")
+}
+
+func TestClientDoesNotDependOnGlobalTransportType(t *testing.T) {
+	previous := http.DefaultTransport
+	http.DefaultTransport = replacedDefaultTransport{}
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	client, err := NewClient(ClientOptions{BaseURL: "https://configra.example.com", Token: testToken()})
+	if err != nil || client == nil {
+		t.Fatalf("NewClient with valid options = %v", err)
+	}
+	client.CloseIdleConnections()
+}
+
+func TestClientEnforcesConfiguredContentLimit(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("ETag", `"one"`)
+		if strings.Contains(request.URL.Path, "/configs/") {
+			response.Header().Set("Content-Type", "application/json")
+			io.WriteString(response, `{"format":"yaml","content":"value: too-long-for-limit","config_revision":1,"vault_revisions":{}}`)
+		} else {
+			response.Header().Set("Content-Type", "text/plain")
+			response.Header().Set("Content-Disposition", `attachment; filename="value.txt"`)
+			io.WriteString(response, "too-long-for-limit")
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, Token: testToken(), TLSConfig: trustServer(server), MaxContentBytes: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	if _, err := client.ReadResolvedConfig(context.Background(), "a", "app", ""); err == nil {
+		t.Fatal("accepted Config larger than configured limit")
+	}
+	if _, err := client.ReadFile(context.Background(), "a", "platform", "app", "file", ""); err == nil {
+		t.Fatal("accepted File larger than configured limit")
+	}
+	for _, limit := range []int64{-1, maxContentBytes + 1} {
+		if _, err := NewClient(ClientOptions{BaseURL: server.URL, Token: testToken(), MaxContentBytes: limit}); err == nil {
+			t.Fatal("accepted invalid content limit")
+		}
+	}
+}
+
 func TestClientReadsResolvedConfigAndFileOverHTTPS(t *testing.T) {
 	token := testToken()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

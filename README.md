@@ -83,6 +83,11 @@ the certificate returned by the callback, call `client.CloseIdleConnections()` s
 request performs a new TLS handshake. An API Token that allows Token-only Authentication
 may omit a client certificate, but HTTPS server verification is always required.
 
+The client owns its HTTP transport and is unaffected by applications replacing
+`http.DefaultTransport`. `ClientOptions.MaxContentBytes` can lower the default
+5 MiB Config/File limit for constrained consumers such as Kubernetes providers;
+the client also bounds the JSON envelope while reading the response.
+
 `Load` installs the initial snapshot without a callback. `Reload` and `Watch` send the
 current ETag, retain the Last-known-good after fetch or parse failure, install changed
 snapshots atomically, and then invoke `OnChange` serially. Callback failure does not roll

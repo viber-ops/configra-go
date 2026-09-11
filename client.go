@@ -11,6 +11,7 @@ import (
 	"io"
 	"maps"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,9 +19,8 @@ import (
 )
 
 const (
-	maxContentBytes  = 5 << 20
-	maxEnvelopeBytes = 8 * maxContentBytes
-	maxErrorBytes    = 64 << 10
+	maxContentBytes = 5 << 20
+	maxErrorBytes   = 64 << 10
 )
 
 // ErrNotModified means the server accepted the supplied ETag and returned HTTP 304.
@@ -32,13 +32,16 @@ type ClientOptions struct {
 	Token     string
 	TLSConfig *tls.Config
 	Timeout   time.Duration
+	// MaxContentBytes optionally lowers the protocol's 5 MiB content limit.
+	MaxContentBytes int64
 }
 
 // Client reads resolved configuration and File fields from the Configra V1 API.
 type Client struct {
-	baseURL *url.URL
-	token   string
-	http    *http.Client
+	baseURL      *url.URL
+	token        string
+	http         *http.Client
+	contentLimit int64
 }
 
 // ResolvedConfig is a final YAML or JSON document plus the revisions used to build it.
@@ -102,14 +105,29 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = tlsConfig
-	transport.MaxIdleConns = 100
-	transport.MaxIdleConnsPerHost = 100
+	contentLimit := options.MaxContentBytes
+	if contentLimit == 0 {
+		contentLimit = maxContentBytes
+	}
+	if contentLimit < 1 || contentLimit > maxContentBytes {
+		return nil, errors.New("Configra content limit must be between 1 byte and 5 MiB")
+	}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSClientConfig:       tlsConfig,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
 	baseURL.Path = ""
 	return &Client{
-		baseURL: baseURL,
-		token:   options.Token,
+		baseURL:      baseURL,
+		token:        options.Token,
+		contentLimit: contentLimit,
 		http: &http.Client{
 			Transport: transport,
 			Timeout:   timeout,
@@ -147,7 +165,7 @@ func (client *Client) ReadResolvedConfig(ctx context.Context, environment, confi
 	if response.StatusCode != http.StatusOK {
 		return ResolvedConfig{}, decodeAPIError(response)
 	}
-	payload, err := readLimited(response.Body, maxEnvelopeBytes)
+	payload, err := readLimited(response.Body, max(64<<10, 8*client.contentLimit))
 	if err != nil {
 		return ResolvedConfig{}, errors.New("invalid Configra Resolved Config response")
 	}
@@ -158,7 +176,7 @@ func (client *Client) ReadResolvedConfig(ctx context.Context, environment, confi
 		VaultRevisions map[string]uint64 `json:"vault_revisions"`
 	}
 	if err := decodeOneJSON(payload, &envelope); err != nil ||
-		(envelope.Format != "yaml" && envelope.Format != "json") || len(envelope.Content) > maxContentBytes ||
+		(envelope.Format != "yaml" && envelope.Format != "json") || int64(len(envelope.Content)) > client.contentLimit ||
 		envelope.ConfigRevision == 0 || envelope.VaultRevisions == nil || !validRevisions(envelope.VaultRevisions) ||
 		!validETag(response.Header.Get("ETag")) {
 		return ResolvedConfig{}, errors.New("invalid Configra Resolved Config response")
@@ -191,7 +209,7 @@ func (client *Client) ReadFile(ctx context.Context, environment, namespace, item
 	if response.StatusCode != http.StatusOK {
 		return File{}, decodeAPIError(response)
 	}
-	content, err := readLimited(response.Body, maxContentBytes)
+	content, err := readLimited(response.Body, client.contentLimit)
 	if err != nil || !validETag(response.Header.Get("ETag")) {
 		return File{}, errors.New("invalid Configra File response")
 	}
