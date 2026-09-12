@@ -10,11 +10,11 @@ Use this SDK when a Go application needs resolved YAML/JSON, Vault file bytes,
 or a periodically refreshed Viper snapshot. The service resolves sensitive-value
 references before returning configuration; the client does not need to resolve them.
 
-> **Preview: v0.1.0-rc.1.** Install the tag below for these initialization helpers;
-> the feature PR remains under review. Go 1.25.13+ is required.
+> **Preview: v0.1.0-rc.2.** Install the tag below for these initialization helpers.
+> Go 1.25.13+ is required. This is an evaluation release, not a production-stability guarantee.
 
 ```sh
-go get github.com/viber-ops/configra-go@v0.1.0-rc.1
+go get github.com/viber-ops/configra-go@v0.1.0-rc.2
 ```
 
 ## Start with your deployment's settings
@@ -35,7 +35,7 @@ if err != nil {
 
 Import `github.com/viber-ops/configra-go`; `ctx` is your application's context.
 The SDK handles certificate loading, HTTPS verification, timeouts and connection
-pooling. [Complete runnable example](https://github.com/viber-ops/configra-go/blob/v0.1.0-rc.1/examples/basic/main.go).
+pooling. [Complete runnable example](https://github.com/viber-ops/configra-go/blob/v0.1.0-rc.2/examples/basic/main.go).
 
 Your deployment provides `CONFIGRA_URL` and either `CONFIGRA_TOKEN` or
 `CONFIGRA_TOKEN_FILE`. For mTLS, provide `CONFIGRA_CLIENT_CERT` and
