@@ -11,6 +11,7 @@ import (
 	"io"
 	"maps"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,9 +19,8 @@ import (
 )
 
 const (
-	maxContentBytes  = 5 << 20
-	maxEnvelopeBytes = 8 * maxContentBytes
-	maxErrorBytes    = 64 << 10
+	maxContentBytes = 5 << 20
+	maxErrorBytes   = 64 << 10
 )
 
 // ErrNotModified means the server accepted the supplied ETag and returned HTTP 304.
@@ -28,17 +28,29 @@ var ErrNotModified = errors.New("Configra content not modified")
 
 // ClientOptions configures a Configra machine-read client.
 type ClientOptions struct {
-	BaseURL   string
-	Token     string
-	TLSConfig *tls.Config
-	Timeout   time.Duration
+	BaseURL string `yaml:"url"`
+	Token   string `yaml:"token,omitempty"`
+	// TokenFile is an alternative to Token, useful for mounted Kubernetes Secrets.
+	TokenFile string        `yaml:"token_file,omitempty"`
+	TLSConfig *tls.Config   `yaml:"-"`
+	Timeout   time.Duration `yaml:"timeout,omitempty"`
+	// ClientCertificateFile loads a PEM client certificate without caller TLS setup.
+	// ClientKeyFile may be omitted when the same PEM also contains the private key.
+	// ServerCAFile is optional; omitted means the system's HTTPS trust roots.
+	// File options are mutually exclusive with TLSConfig and are read once.
+	ClientCertificateFile string `yaml:"cert_file,omitempty"`
+	ClientKeyFile         string `yaml:"key_file,omitempty"`
+	ServerCAFile          string `yaml:"server_ca_file,omitempty"`
+	// MaxContentBytes optionally lowers the protocol's 5 MiB content limit.
+	MaxContentBytes int64 `yaml:"max_content_bytes,omitempty"`
 }
 
 // Client reads resolved configuration and File fields from the Configra V1 API.
 type Client struct {
-	baseURL *url.URL
-	token   string
-	http    *http.Client
+	baseURL      *url.URL
+	token        string
+	http         *http.Client
+	contentLimit int64
 }
 
 // ResolvedConfig is a final YAML or JSON document plus the revisions used to build it.
@@ -74,22 +86,45 @@ func (err *APIError) Error() string {
 
 // NewClient validates options and creates an HTTPS-only Configra client.
 func NewClient(options ClientOptions) (*Client, error) {
+	if options.BaseURL == "" {
+		return nil, invalidInitialization("url", "is required", "Set the Configra machine API HTTPS origin, for example https://configra-api.example.com.")
+	}
 	baseURL, err := url.Parse(options.BaseURL)
 	if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil ||
 		(baseURL.Path != "" && baseURL.Path != "/") || baseURL.RawQuery != "" || baseURL.Fragment != "" || baseURL.Opaque != "" {
-		return nil, errors.New("Configra Base URL must be one HTTPS origin")
+		return nil, invalidInitialization("url", "must be an HTTPS origin without a path, query or embedded credentials", "Use the machine API address, not the Management /ui/ address.")
+	}
+	if options.TokenFile != "" {
+		if options.Token != "" {
+			return nil, invalidInitialization("token", "both a Token value and Token file were supplied", "Choose exactly one source; neither takes precedence.")
+		}
+		token, err := readCredential(options.TokenFile, 1024)
+		if err != nil {
+			return nil, credentialReadError("token_file", err)
+		}
+		options.Token = strings.TrimSpace(string(token))
+		clear(token)
 	}
 	if !validToken(options.Token) {
-		return nil, errors.New("Configra API Token is invalid")
+		return nil, invalidInitialization("token", "is missing or is not a valid Configra API Token", "Provide the API Token created in Administration, directly or through a Token file; a login password or certificate is not a Token.")
+	}
+	if options.ClientCertificateFile != "" || options.ClientKeyFile != "" || options.ServerCAFile != "" {
+		if options.TLSConfig != nil {
+			return nil, invalidInitialization("tls_config", "was combined with file-based TLS settings", "Choose certificate files for ordinary setup or TLSConfig for advanced setup, not both.")
+		}
+		options.TLSConfig, err = loadTLSFiles(options)
+		if err != nil {
+			return nil, err
+		}
 	}
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if options.TLSConfig != nil {
 		if options.TLSConfig.InsecureSkipVerify {
-			return nil, errors.New("Configra TLS verification cannot be disabled")
+			return nil, invalidInitialization("tls_config", "server verification cannot be disabled", "Supply the API server CA instead; the managed client CA is a different trust role.")
 		}
 		tlsConfig = options.TLSConfig.Clone()
 		if tlsConfig.MaxVersion != 0 && tlsConfig.MaxVersion < tls.VersionTLS12 {
-			return nil, errors.New("Configra TLS requires TLS 1.2 or newer")
+			return nil, invalidInitialization("tls_config", "requires TLS 1.2 or newer", "Remove the outdated maximum TLS version or raise it.")
 		}
 		if tlsConfig.MinVersion < tls.VersionTLS12 {
 			tlsConfig.MinVersion = tls.VersionTLS12
@@ -97,19 +132,34 @@ func NewClient(options ClientOptions) (*Client, error) {
 	}
 	timeout := options.Timeout
 	if timeout < 0 {
-		return nil, errors.New("Configra HTTP Timeout cannot be negative")
+		return nil, invalidInitialization("timeout", "cannot be negative", "Omit it for the 30-second default, or use a positive duration such as 10s.")
 	}
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = tlsConfig
-	transport.MaxIdleConns = 100
-	transport.MaxIdleConnsPerHost = 100
+	contentLimit := options.MaxContentBytes
+	if contentLimit == 0 {
+		contentLimit = maxContentBytes
+	}
+	if contentLimit < 1 || contentLimit > maxContentBytes {
+		return nil, invalidInitialization("max_content_bytes", "must be between 1 byte and 5 MiB", "Omit it for the default limit; this setting can only lower the protocol limit.")
+	}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSClientConfig:       tlsConfig,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
 	baseURL.Path = ""
 	return &Client{
-		baseURL: baseURL,
-		token:   options.Token,
+		baseURL:      baseURL,
+		token:        options.Token,
+		contentLimit: contentLimit,
 		http: &http.Client{
 			Transport: transport,
 			Timeout:   timeout,
@@ -147,7 +197,7 @@ func (client *Client) ReadResolvedConfig(ctx context.Context, environment, confi
 	if response.StatusCode != http.StatusOK {
 		return ResolvedConfig{}, decodeAPIError(response)
 	}
-	payload, err := readLimited(response.Body, maxEnvelopeBytes)
+	payload, err := readLimited(response.Body, max(64<<10, 8*client.contentLimit))
 	if err != nil {
 		return ResolvedConfig{}, errors.New("invalid Configra Resolved Config response")
 	}
@@ -158,7 +208,7 @@ func (client *Client) ReadResolvedConfig(ctx context.Context, environment, confi
 		VaultRevisions map[string]uint64 `json:"vault_revisions"`
 	}
 	if err := decodeOneJSON(payload, &envelope); err != nil ||
-		(envelope.Format != "yaml" && envelope.Format != "json") || len(envelope.Content) > maxContentBytes ||
+		(envelope.Format != "yaml" && envelope.Format != "json") || int64(len(envelope.Content)) > client.contentLimit ||
 		envelope.ConfigRevision == 0 || envelope.VaultRevisions == nil || !validRevisions(envelope.VaultRevisions) ||
 		!validETag(response.Header.Get("ETag")) {
 		return ResolvedConfig{}, errors.New("invalid Configra Resolved Config response")
@@ -191,7 +241,7 @@ func (client *Client) ReadFile(ctx context.Context, environment, namespace, item
 	if response.StatusCode != http.StatusOK {
 		return File{}, decodeAPIError(response)
 	}
-	content, err := readLimited(response.Body, maxContentBytes)
+	content, err := readLimited(response.Body, client.contentLimit)
 	if err != nil || !validETag(response.Header.Get("ETag")) {
 		return File{}, errors.New("invalid Configra File response")
 	}

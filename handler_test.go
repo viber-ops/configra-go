@@ -6,10 +6,39 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestSnapshotDecodeErrorsDoNotExposeValues(t *testing.T) {
+	const secret = "snapshot-secret-must-not-appear-in-errors"
+	state := &resolvedState{}
+	state.set("yaml", "password: "+secret+"\n", 1, `"revision-1"`)
+	server := httptest.NewTLSServer(state)
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, Token: testToken(), TLSConfig: trustServer(server)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewViperHandler(ViperHandlerOptions{Client: client, Environment: "a", Config: "payment"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := handler.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target struct{ Password int }
+	err = snapshot.Unmarshal(&target)
+	if err == nil {
+		t.Fatal("expected a decoding error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatal("decoding error disclosed a configuration value")
+	}
+}
 
 func TestViperHandlerLoadsReloadsAndRetainsLastKnownGood(t *testing.T) {
 	state := &resolvedState{}

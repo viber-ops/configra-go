@@ -6,10 +6,10 @@
 
 读取已解析的 YAML / JSON、Vault 文件，或使用 Viper 定期刷新配置。服务端负责解析 Vault 引用，应用专注于验证和使用最终配置。
 
-当前为 **v0.1.0-rc.1 预发布**，下面的初始化方式对应此标签；需要 Go 1.25.13+。
+当前为 **v0.1.0-rc.2 预发布**，下面的初始化方式对应此标签；需要 Go 1.25.13+。用于评估和试用，不代表生产稳定性保证。
 
 ```sh
-go get github.com/viber-ops/configra-go@v0.1.0-rc.1
+go get github.com/viber-ops/configra-go@v0.1.0-rc.2
 ```
 
 ## 默认从环境开始
@@ -59,7 +59,7 @@ key_file: /run/secrets/client.key
 
 凭据文件在初始化时加载一次。变更后重建 Client，或使用高级证书回调实现在线轮换。构造 Client 不会自动启动 Watch 或其他后台循环。
 
-[完整示例](https://github.com/viber-ops/configra-go/blob/v0.1.0-rc.1/examples/basic/main.go) · [初始化、读取与 Viper 指南](https://viber-ops.github.io/docs/configra/go-sdk/)
+[完整示例](https://github.com/viber-ops/configra-go/blob/v0.1.0-rc.2/examples/basic/main.go) · [初始化、读取与 Viper 指南](https://viber-ops.github.io/docs/configra/go-sdk/)
 
 ## 许可证
 
