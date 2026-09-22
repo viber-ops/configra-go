@@ -40,6 +40,52 @@ func TestSnapshotDecodeErrorsDoNotExposeValues(t *testing.T) {
 	}
 }
 
+func TestSnapshotUnmarshalDoesNotShareMutableValues(t *testing.T) {
+	state := &resolvedState{}
+	state.set("yaml", "servers:\n  - name: primary\n    ports: [8080, 8443]\n", 1, `"revision-1"`)
+	server := httptest.NewTLSServer(state)
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, Token: testToken(), TLSConfig: trustServer(server)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	handler, err := NewViperHandler(ViperHandlerOptions{Client: client, Environment: "a", Config: "payment"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := handler.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first, second map[string]any
+	if err := snapshot.Unmarshal(&first); err != nil {
+		t.Fatal(err)
+	}
+	if err := snapshot.Unmarshal(&second); err != nil {
+		t.Fatal(err)
+	}
+	entry := first["servers"].([]any)[0].(map[string]any)
+	entry["name"] = "changed-by-caller"
+	entry["ports"].([]any)[0] = 9000
+	other := second["servers"].([]any)[0].(map[string]any)
+	if other["name"] != "primary" || other["ports"].([]any)[0] != 8080 {
+		t.Fatal("mutating one decoded value changed another reader's snapshot")
+	}
+	var fresh struct {
+		Servers []struct {
+			Name  string
+			Ports []int
+		}
+	}
+	if err := handler.Current().Unmarshal(&fresh); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Servers[0].Name != "primary" || fresh.Servers[0].Ports[0] != 8080 {
+		t.Fatal("mutating decoded values changed the installed snapshot")
+	}
+}
+
 func TestViperHandlerLoadsReloadsAndRetainsLastKnownGood(t *testing.T) {
 	state := &resolvedState{}
 	state.set("yaml", "database:\n  host: 10.0.0.1\n  port: 3306\n", 1, `"revision-1"`)

@@ -187,6 +187,7 @@ func TestClientRejectsUnsafeConfigurationResourceKeysAndRedirects(t *testing.T) 
 		"plain HTTP":         {BaseURL: "http://configra.example.com", Token: testToken()},
 		"credential in URL":  {BaseURL: "https://user:secret-sentinel@configra.example.com", Token: testToken()},
 		"base URL path":      {BaseURL: "https://configra.example.com/api", Token: testToken()},
+		"missing hostname":   {BaseURL: "https://:443", Token: testToken()},
 		"missing Token":      {BaseURL: "https://configra.example.com"},
 		"disabled TLS check": {BaseURL: "https://configra.example.com", Token: testToken(), TLSConfig: &tls.Config{InsecureSkipVerify: true}},
 	} {

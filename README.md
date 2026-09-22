@@ -10,11 +10,11 @@ Use this SDK when a Go application needs resolved YAML/JSON, Vault file bytes,
 or a periodically refreshed Viper snapshot. The service resolves sensitive-value
 references before returning configuration; the client does not need to resolve them.
 
-> **Preview: v0.1.0-rc.2.** Install the tag below for these initialization helpers.
+> **Preview: v0.1.0-rc.3.** Install the tag below for these initialization helpers.
 > Go 1.25.13+ is required. This is an evaluation release, not a production-stability guarantee.
 
 ```sh
-go get github.com/viber-ops/configra-go@v0.1.0-rc.2
+go get github.com/viber-ops/configra-go@v0.1.0-rc.3
 ```
 
 ## Start with your deployment's settings
@@ -35,7 +35,7 @@ if err != nil {
 
 Import `github.com/viber-ops/configra-go`; `ctx` is your application's context.
 The SDK handles certificate loading, HTTPS verification, timeouts and connection
-pooling. [Complete runnable example](https://github.com/viber-ops/configra-go/blob/v0.1.0-rc.2/examples/basic/main.go).
+pooling. [Complete runnable example](https://github.com/viber-ops/configra-go/blob/v0.1.0-rc.3/examples/basic/main.go).
 
 Your deployment provides `CONFIGRA_URL` and either `CONFIGRA_TOKEN` or
 `CONFIGRA_TOKEN_FILE`. For mTLS, provide `CONFIGRA_CLIENT_CERT` and
@@ -98,6 +98,9 @@ Credential files are loaded once. Rebuild the client to adopt new files, or use
 the advanced `TLSConfig.GetClientCertificate` callback for live rotation and call
 `CloseIdleConnections()` after replacing the identity. The SDK has its own HTTP
 transport, independent of `http.DefaultTransport`.
+Closing idle connections does not interrupt active requests or guarantee an
+immediate identity change on a busy HTTP/2 connection. For a strict cutover,
+stop old callers and switch to a new client. Token changes also require a new client.
 
 ## Verify
 

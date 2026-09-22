@@ -90,7 +90,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 		return nil, invalidInitialization("url", "is required", "Set the Configra machine API HTTPS origin, for example https://configra-api.example.com.")
 	}
 	baseURL, err := url.Parse(options.BaseURL)
-	if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil ||
+	if err != nil || baseURL.Scheme != "https" || baseURL.Hostname() == "" || baseURL.User != nil ||
 		(baseURL.Path != "" && baseURL.Path != "/") || baseURL.RawQuery != "" || baseURL.Fragment != "" || baseURL.Opaque != "" {
 		return nil, invalidInitialization("url", "must be an HTTPS origin without a path, query or embedded credentials", "Use the machine API address, not the Management /ui/ address.")
 	}
@@ -170,8 +170,10 @@ func NewClient(options ClientOptions) (*Client, error) {
 	}, nil
 }
 
-// CloseIdleConnections forces future requests to establish a new TLS connection.
-// Call it after updating the certificate returned by TLSConfig.GetClientCertificate.
+// CloseIdleConnections closes idle connections, but does not interrupt active requests.
+// Call it after updating TLSConfig.GetClientCertificate. For an immediate identity
+// change, stop old callers and switch to a new Client; active HTTP/2 connections
+// may still carry requests using the previous identity.
 func (client *Client) CloseIdleConnections() {
 	if client != nil {
 		client.http.CloseIdleConnections()

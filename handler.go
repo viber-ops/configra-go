@@ -56,7 +56,7 @@ type ViperHandler struct {
 
 // Snapshot is an immutable parsed Config and its exact revision evidence.
 type Snapshot struct {
-	values         *viper.Viper
+	values         map[string]any
 	format         string
 	configRevision uint64
 	vaultRevisions map[string]uint64
@@ -215,7 +215,7 @@ func newSnapshot(resolved ResolvedConfig) (*Snapshot, error) {
 		return nil, errors.New("invalid Configra configuration document")
 	}
 	return &Snapshot{
-		values:         values,
+		values:         values.AllSettings(),
 		format:         resolved.Format,
 		configRevision: resolved.ConfigRevision,
 		vaultRevisions: maps.Clone(resolved.VaultRevisions),
@@ -223,12 +223,39 @@ func newSnapshot(resolved ResolvedConfig) (*Snapshot, error) {
 	}, nil
 }
 
-// Unmarshal decodes the Snapshot into target using Viper.
+// Unmarshal decodes the Snapshot into target using Viper. Nested maps and slices
+// are copied so changes to target cannot modify this Snapshot or another decode.
 func (snapshot *Snapshot) Unmarshal(target any, options ...viper.DecoderConfigOption) error {
 	if snapshot == nil {
 		return ErrNotLoaded
 	}
-	return snapshot.values.Unmarshal(target, options...)
+	// Viper/mapstructure may expose nested maps and slices through interface
+	// fields or decode hooks. Each caller must own those mutable values.
+	values := viper.New()
+	if err := values.MergeConfigMap(cloneSettings(snapshot.values).(map[string]any)); err != nil {
+		return errors.New("invalid Configra configuration document")
+	}
+	return values.Unmarshal(target, options...)
+}
+
+// Parsed YAML/JSON settings contain maps, slices, and immutable scalar values.
+func cloneSettings(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(value))
+		for key, child := range value {
+			result[key] = cloneSettings(child)
+		}
+		return result
+	case []any:
+		result := make([]any, len(value))
+		for index, child := range value {
+			result[index] = cloneSettings(child)
+		}
+		return result
+	default:
+		return value
+	}
 }
 
 // Format returns yaml or json.
