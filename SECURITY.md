@@ -8,8 +8,10 @@ minimal reproduction with synthetic credentials. Do not post live Tokens,
 private keys or resolved configuration in public issues. If the private form is
 unavailable, ask for a private contact without describing the vulnerability.
 
-The SDK is currently in prerelease; fixes are published as new versions rather
-than by rewriting tags. No fixed response or remediation SLA is promised.
+The supported stable line starts at v1.0.0. Use its latest patch release when
+reporting an issue; older `-rc` versions are superseded. Fixes are published as
+new versions rather than by rewriting tags. No fixed response or remediation
+SLA is promised.
 
 HTTPS verification is mandatory. File credentials are loaded once; advanced live
 rotation requires the documented callback. Last-known-good snapshots are in
