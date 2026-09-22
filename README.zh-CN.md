@@ -6,10 +6,10 @@
 
 读取已解析的 YAML / JSON、Vault 文件，或使用 Viper 定期刷新配置。服务端负责解析 Vault 引用，应用专注于验证和使用最终配置。
 
-当前为 **v0.1.0-rc.3 预发布**，下面的初始化方式对应此标签；需要 Go 1.25.13+。用于评估和试用，不代表生产稳定性保证。
+当前稳定版为 **v1.0.0**，需要 Go 1.25.13+。应用仍需处理读取错误，并在应用新快照前校验配置。
 
 ```sh
-go get github.com/viber-ops/configra-go@v0.1.0-rc.3
+go get github.com/viber-ops/configra-go@v1.0.0
 ```
 
 ## 默认从环境开始
@@ -61,7 +61,7 @@ key_file: /run/secrets/client.key
 
 更新 `TLSConfig.GetClientCertificate` 返回的证书后，可以调用 `CloseIdleConnections()` 关闭空闲连接；它不会中断进行中的请求，忙碌的 HTTP/2 连接也可能继续使用旧身份。需要立即切换身份时，应停止旧调用并换用新 Client。更换 Token 同样需要新建 Client。
 
-[完整示例](https://github.com/viber-ops/configra-go/blob/v0.1.0-rc.3/examples/basic/main.go) · [初始化、读取与 Viper 指南](https://viber-ops.github.io/docs/configra/go-sdk/)
+[完整示例](https://github.com/viber-ops/configra-go/blob/v1.0.0/examples/basic/main.go) · [初始化、读取与 Viper 指南](https://viber-ops.github.io/docs/configra/go-sdk/)
 
 ## 许可证
 
