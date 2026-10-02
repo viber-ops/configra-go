@@ -1,6 +1,6 @@
 # configra-go
 
-**Read Configra configuration from Go, without writing your own TLS setup.**
+**Read Configra configuration and automate scoped writes from Go.**
 
 [Configra](https://viber-ops.github.io/en/configra/) ·
 [SDK guide](https://viber-ops.github.io/en/docs/configra/go-sdk/) ·
@@ -10,11 +10,11 @@ Use this SDK when a Go application needs resolved YAML/JSON, Vault file bytes,
 or a periodically refreshed Viper snapshot. The service resolves sensitive-value
 references before returning configuration; the client does not need to resolve them.
 
-> **Stable release: v1.0.0.** Requires Go 1.25.13+.
+> **Stable release: v1.1.0.** Requires Go 1.25.13+.
 > Configuration reloads remain application-controlled; handle errors and validate new snapshots before applying them.
 
 ```sh
-go get github.com/viber-ops/configra-go@v1.0.0
+go get github.com/viber-ops/configra-go@v1.1.0
 ```
 
 ## Start with your deployment's settings
@@ -35,7 +35,7 @@ if err != nil {
 
 Import `github.com/viber-ops/configra-go`; `ctx` is your application's context.
 The SDK handles certificate loading, HTTPS verification, timeouts and connection
-pooling. [Complete runnable example](https://github.com/viber-ops/configra-go/blob/v1.0.0/examples/basic/main.go).
+pooling. [Complete runnable example](https://github.com/viber-ops/configra-go/blob/v1.1.0/examples/basic/main.go).
 
 Your deployment provides `CONFIGRA_URL` and either `CONFIGRA_TOKEN` or
 `CONFIGRA_TOKEN_FILE`. For mTLS, provide `CONFIGRA_CLIENT_CERT` and
@@ -119,3 +119,62 @@ the SDK does not add resource-level authorization.
 Original project source is licensed under [Apache-2.0](LICENSE). Third-party
 components retain their own licenses and notices. See [CONTRIBUTING.md](CONTRIBUTING.md)
 and [SECURITY.md](SECURITY.md) for contributions and private vulnerability reports.
+
+## Scoped writes (server v1.1.0+)
+
+Keep read-only credentials on deployed hosts and a separately issued
+`write-scoped` Token plus registered mTLS certificate on the operator. A verified
+OIDC/MFA Administrator issues the writer; automation does not receive a human
+session or any CA/Master signing key. [Model, issuance and boundaries](https://github.com/viber-ops/configra/blob/feat/scoped-write-tokens/docs/scoped-write-tokens.md).
+
+```go
+result, err := client.WriteConfig(ctx, "testing", "server", configra.ConfigWrite{
+    RevisionWrite: configra.RevisionWrite{OperationID: "upload-server-001", ExpectedRevision: 0},
+    Name: "server.yaml", Format: "yaml", Content: "port: 8080\n",
+})
+```
+
+Use a new OperationID for new content; reuse it for identical retries only.
+`ExpectedRevision` is zero for creation and the current revision for updates.
+HTTP 403 means a scope denial, 401 an inactive/missing credential, and 409 a
+revision or OperationID conflict; `APIError` contains only a safe code/Request ID.
+No method automatically logs Config, Vault values or credential exports.
+
+| Method | Purpose |
+| --- | --- |
+| `WriteConfig`, `ReadRawConfig` | Commit a version and read its current raw source/revision |
+| `WriteVaultItem`, `ReadVaultItem` | Replace/read one Environment's complete Item values |
+| `WriteVaultField`, `WriteFile` | Create/update Text/Secret or File fields |
+| `DeleteVaultField`, `DeleteVaultItem` | Remove a shared Field or archive an Item, retaining history |
+| `IssueDeploymentCredential`, `RevokeDeploymentCredential` | Atomically issue/revoke a read-only Token and bound certificate |
+
+Item/Field schema changes require grants for all bound Environments. File bytes
+use JSON/base64 and remain limited to 5 MiB each and 10 MiB per Vault snapshot.
+Deployment credentials inherit Config/Namespace restrictions; their expiry cannot
+outlive the writer/CA, and writer revocation cascades to its deployment pairs.
+Issuance returns the Token and base64 certificate ZIP once; retries return only
+metadata. Save exports privately, with Token/key files at `0600`.
+
+The [operator example](examples/operator/main.go) uploads server YAML and a complete
+set of secret files (`file_01` through `file_17` for 17 arguments). Supply files in
+a stable order; it reads revisions before writing and saves a new deployment pair:
+
+```sh
+export CONFIGRA_URL=https://configra-api.example.internal:9443
+export CONFIGRA_TOKEN_FILE=/run/secrets/operator-token
+export CONFIGRA_CLIENT_CERT=/run/secrets/operator.crt
+export CONFIGRA_CLIENT_KEY=/run/secrets/operator.key
+export CONFIGRA_SERVER_CA=/run/secrets/server-ca.crt
+export CONFIGRA_DEPLOYMENT_CA_ID=YOUR_PUBLIC_MANAGED_CA_ID
+go run ./examples/operator -environment testing -namespace deployment \
+  -authority "$CONFIGRA_DEPLOYMENT_CA_ID" -config server.yaml \
+  -output deployment-identity secrets/*.key
+```
+
+The example uses Config key `server`, Vault Item `deployment/secrets`, a 24-hour
+host credential (the writer must have at least that much lifetime remaining),
+and a new private output directory. `token` and `client.zip` are mode `0600`.
+Unzip privately; `ca.crt` is client-issuer trust, not necessarily the HTTPS server
+CA. Existing read methods and Viper handlers remain compatible with older servers.
+The Configra repository's `make test-integration` runs this example over real
+HTTPS/mTLS with MySQL 8.0.22, NATS and ClickHouse.

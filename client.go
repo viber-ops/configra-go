@@ -26,7 +26,7 @@ const (
 // ErrNotModified means the server accepted the supplied ETag and returned HTTP 304.
 var ErrNotModified = errors.New("Configra content not modified")
 
-// ClientOptions configures a Configra machine-read client.
+// ClientOptions configures a Configra machine API client.
 type ClientOptions struct {
 	BaseURL string `yaml:"url"`
 	Token   string `yaml:"token,omitempty"`
@@ -45,7 +45,7 @@ type ClientOptions struct {
 	MaxContentBytes int64 `yaml:"max_content_bytes,omitempty"`
 }
 
-// Client reads resolved configuration and File fields from the Configra V1 API.
+// Client reads Configra V1 resources and, with a write-scoped Token, writes them.
 type Client struct {
 	baseURL      *url.URL
 	token        string
@@ -267,13 +267,23 @@ func (client *Client) get(ctx context.Context, path, etag string) (*http.Respons
 	if etag != "" && !validETag(etag) {
 		return nil, errors.New("invalid Configra ETag")
 	}
+	return client.do(ctx, http.MethodGet, path, nil, "", etag)
+}
+
+func (client *Client) do(ctx context.Context, method, path string, body io.Reader, operationID, etag string) (*http.Response, error) {
 	endpoint := *client.baseURL
 	endpoint.Path = path
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
 	if err != nil {
 		return nil, errors.New("create Configra request")
 	}
 	request.Header.Set("Authorization", "Bearer "+client.token)
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if operationID != "" {
+		request.Header.Set("Idempotency-Key", operationID)
+	}
 	if etag != "" {
 		request.Header.Set("If-None-Match", etag)
 	}
