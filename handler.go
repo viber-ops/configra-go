@@ -1,6 +1,7 @@
 package configra
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -32,7 +33,9 @@ type ChangeCallback func(context.Context, *Snapshot, *Snapshot) error
 
 // ViperHandlerOptions configures loading and watching one Config in one Environment.
 type ViperHandlerOptions struct {
-	Client        *Client
+	Client *Client
+	// UseRelease follows the active Config+File release stream in one request.
+	UseRelease    bool
 	Environment   string
 	Config        string
 	WatchInterval time.Duration
@@ -47,6 +50,7 @@ type ViperHandlerOptions struct {
 // ViperHandler maintains the last valid immutable Config Snapshot.
 type ViperHandler struct {
 	client        *Client
+	useRelease    bool
 	environment   string
 	config        string
 	watchInterval time.Duration
@@ -65,11 +69,14 @@ type ViperHandler struct {
 
 // Snapshot is an immutable parsed Config and its exact revision evidence.
 type Snapshot struct {
-	values         map[string]any
-	format         string
-	configRevision uint64
-	vaultRevisions map[string]uint64
-	etag           string
+	files             map[string][]byte
+	releaseKey        string
+	releaseGeneration uint64
+	values            map[string]any
+	format            string
+	configRevision    uint64
+	vaultRevisions    map[string]uint64
+	etag              string
 }
 
 // NewViperHandler validates options and creates an unloaded Handler.
@@ -86,6 +93,7 @@ func NewViperHandler(options ViperHandlerOptions) (*ViperHandler, error) {
 	}
 	return &ViperHandler{
 		client:        options.Client,
+		useRelease:    options.UseRelease,
 		environment:   options.Environment,
 		config:        options.Config,
 		watchInterval: interval,
@@ -110,11 +118,7 @@ func (handler *ViperHandler) Load(ctx context.Context) (snapshot *Snapshot, resu
 		return nil, ErrAlreadyLoaded
 	}
 	defer func() { handler.observe(resultErr) }()
-	resolved, err := handler.client.ReadResolvedConfig(ctx, handler.environment, handler.config, "")
-	if err != nil {
-		return nil, err
-	}
-	snapshot, err = handler.validatedSnapshot(ctx, resolved)
+	snapshot, err := handler.fetchSnapshot(ctx, "")
 	if err != nil {
 		return nil, err
 	}
@@ -191,14 +195,10 @@ func (handler *ViperHandler) reloadLocked(ctx context.Context) (changed, success
 		return false, false, nil, nil, ErrNotLoaded
 	}
 	defer func() { handler.observe(resultErr) }()
-	resolved, err := handler.client.ReadResolvedConfig(ctx, handler.environment, handler.config, previous.etag)
+	current, err := handler.fetchSnapshot(ctx, previous.etag)
 	if errors.Is(err, ErrNotModified) {
 		return false, true, nil, nil, nil
 	}
-	if err != nil {
-		return false, false, nil, nil, err
-	}
-	current, err = handler.validatedSnapshot(ctx, resolved)
 	if err != nil {
 		return false, false, nil, nil, err
 	}
@@ -259,10 +259,31 @@ func (handler *ViperHandler) observe(err error) {
 	}
 }
 
-func (handler *ViperHandler) validatedSnapshot(ctx context.Context, resolved ResolvedConfig) (*Snapshot, error) {
+func (handler *ViperHandler) fetchSnapshot(ctx context.Context, etag string) (*Snapshot, error) {
+	var resolved ResolvedConfig
+	var bundle ReleaseBundle
+	var err error
+	if handler.useRelease {
+		bundle, err = handler.client.ReadRelease(ctx, handler.environment, handler.config, "", etag)
+		resolved = bundle.Config
+	} else {
+		resolved, err = handler.client.ReadResolvedConfig(ctx, handler.environment, handler.config, etag)
+	}
+	if err != nil {
+		return nil, err
+	}
+
 	snapshot, err := newSnapshot(resolved)
 	if err != nil {
 		return nil, err
+	}
+	if handler.useRelease {
+		snapshot.releaseKey = bundle.Manifest.ReleaseKey
+		snapshot.releaseGeneration = bundle.Generation
+		snapshot.files = map[string][]byte{}
+		for _, file := range bundle.Files {
+			snapshot.files[file.Path] = bytes.Clone(file.Bytes)
+		}
 	}
 	if handler.validate != nil {
 		validationErr := handler.validate(ctx, snapshot)
@@ -381,4 +402,28 @@ func waitContext(ctx context.Context, duration time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// Files returns independent copies of all File members of this release.
+func (snapshot *Snapshot) Files() map[string][]byte {
+	if snapshot == nil {
+		return nil
+	}
+	result := make(map[string][]byte, len(snapshot.files))
+	for path, value := range snapshot.files {
+		result[path] = bytes.Clone(value)
+	}
+	return result
+}
+func (snapshot *Snapshot) ReleaseKey() string {
+	if snapshot == nil {
+		return ""
+	}
+	return snapshot.releaseKey
+}
+func (snapshot *Snapshot) ReleaseGeneration() uint64 {
+	if snapshot == nil {
+		return 0
+	}
+	return snapshot.releaseGeneration
 }
