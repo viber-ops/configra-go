@@ -1,15 +1,5 @@
 # configra-go
 
-Development additions: `ViperHandlerOptions.Validate` checks a candidate before
-Load/Reload installs it. Rejection returns value-free `ErrSnapshotRejected`, keeps
-the previous Snapshot/ETag and skips OnChange. The validator must be side-effect-free,
-respect cancellation and must not reenter the Handler. `Status()` reports the
-last completed check, accepted/unchanged fetch and consecutive failures; it does
-not attest application callback success. `ReadIdentity` and the scoped writer's
-`ListDeploymentCredentials` expose value-free lifecycle metadata and require the
-corresponding new server endpoints. `APIError.RetryAfter` exposes bounded numeric
-retry hints; mutations are not automatically retried with a different identity.
-
 **Read Configra configuration and automate scoped writes from Go.**
 
 [Configra](https://viber-ops.github.io/en/configra/) ·
@@ -20,11 +10,11 @@ Use this SDK when a Go application needs resolved YAML/JSON, Vault file bytes,
 or a periodically refreshed Viper snapshot. The service resolves sensitive-value
 references before returning configuration; the client does not need to resolve them.
 
-> **Stable release: v1.1.0.** Requires Go 1.25.13+.
+> **Stable release: v1.2.0.** Requires Go 1.25.13+.
 > Configuration reloads remain application-controlled; handle errors and validate new snapshots before applying them.
 
 ```sh
-go get github.com/viber-ops/configra-go@v1.1.0
+go get github.com/viber-ops/configra-go@v1.2.0
 ```
 
 ## Start with your deployment's settings
@@ -45,7 +35,7 @@ if err != nil {
 
 Import `github.com/viber-ops/configra-go`; `ctx` is your application's context.
 The SDK handles certificate loading, HTTPS verification, timeouts and connection
-pooling. [Complete runnable example](https://github.com/viber-ops/configra-go/blob/v1.1.0/examples/basic/main.go).
+pooling. [Complete runnable example](https://github.com/viber-ops/configra-go/blob/v1.2.0/examples/basic/main.go).
 
 Your deployment provides `CONFIGRA_URL` and either `CONFIGRA_TOKEN` or
 `CONFIGRA_TOKEN_FILE`. For mTLS, provide `CONFIGRA_CLIENT_CERT` and
@@ -188,3 +178,51 @@ Unzip privately; `ca.crt` is client-issuer trust, not necessarily the HTTPS serv
 CA. Existing read methods and Viper handlers remain compatible with older servers.
 The Configra repository's `make test-integration` runs this example over real
 HTTPS/mTLS with MySQL 8.0.22, NATS and ClickHouse.
+
+## Validated, consistent release sets (server v1.2.0+)
+
+`PrepareRelease` records an immutable manifest; `ActivateRelease` performs an
+expected-generation compare-and-swap, including rollback to an older key.
+`ReadRelease(ctx, environment, config, key, etag)` reads the complete pinned
+Config+File batch; an empty key follows the active release. `ReadReleaseState`
+returns the active key/generation without secret values. Existing Config/File
+methods still read current values and do not automatically follow release state.
+
+Set `ViperHandlerOptions.UseRelease: true` to consume the whole active release.
+`Snapshot.Files()` returns independent byte copies, while `ReleaseKey()` and
+`ReleaseGeneration()` identify the deployment. The release example expects a
+Config `port` value and `secrets/signing.key` File member:
+
+```sh
+CONFIGRA_ENVIRONMENT=production CONFIGRA_CONFIG=server go run ./examples/releases
+```
+
+[Runnable release consumer](examples/releases/main.go) uses the usual credential
+settings and performs validation before installation. The service protocol caps
+a release at 32 members including Config and 5 MiB total decoded content; lowering
+ClientOptions.MaxContentBytes lowers the complete batch limit.
+
+`ViperHandlerOptions.Validate` runs before initial Load and changed Reload.
+Rejection returns value-free `ErrSnapshotRejected`, keeps the previous Snapshot
+and ETag, and skips OnChange. The validator must be pure, honor cancellation and
+not reenter the Handler. OnChange remains a post-install notification; it cannot
+reject installation retroactively. `Status()` reports last completed attempt,
+accepted/unchanged fetch, consecutive failures and safe error code; it does not
+attest application callback success. Export it through your application's
+existing metrics and define its acceptable staleness policy.
+
+`ReadIdentity` and a writer's `ListDeploymentCredentials` expose value-free scopes,
+issuer relationships and expiry/inventory metadata. `APIError.RetryAfter` exposes
+bounded numeric retry hints for 429/overload. Writes never automatically choose a
+new OperationID or retry after uncertainty. The companion service release ships
+`configractl`, a Cobra Go CLI, for operator scripts that do not embed this SDK.
+
+## Upgrade from v1.1.0
+
+Existing read/write calls and post-install OnChange behavior remain compatible.
+New release/identity/inventory methods require server v1.2.0 and its schema 4
+migration. Deploy the server upgrade first; opt into UseRelease only after the
+first release is prepared and activated. Empty active streams fail Load rather
+than silently falling back to independently versioned current values. No service
+credentials or Master Key are required by the SDK beyond the existing machine
+Token and TLS settings. See the service's [upgrade runbook](https://github.com/viber-ops/configra/blob/v1.2.0/docs/releases/v1.2.0.md).

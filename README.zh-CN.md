@@ -1,22 +1,15 @@
 # configra-go
 
-开发版新增：`ViperHandlerOptions.Validate` 在初次 Load/变更 Reload 安装前执行业务
-校验；失败仅返回不含值的 `ErrSnapshotRejected`，保留原 Snapshot/ETag，不调用
-OnChange。校验函数应无副作用、响应取消，且不重入 Handler。`Status()` 提供最近
-检查/成功刷新与连续失败状态，不代表应用回调已经执行成功。`ReadIdentity`、writer
-专用 `ListDeploymentCredentials` 提供无值身份/到期/部署凭据清单，需配套服务端新
-接口。`APIError.RetryAfter` 保留有界数字重试提示；不会自动换一个 ID 重试写入。
-
 **在 Go 应用里读取 Configra，不必自己初始化 TLS 和连接池。**
 
 [产品网站](https://viber-ops.github.io/configra/) · [SDK 文档](https://viber-ops.github.io/docs/configra/go-sdk/) · [English](README.md)
 
 读取已解析的 YAML / JSON、Vault 文件，或使用 Viper 定期刷新配置。服务端负责解析 Vault 引用，应用专注于验证和使用最终配置。
 
-当前稳定版为 **v1.1.0**，需要 Go 1.25.13+。应用仍需处理读取错误，并在应用新快照前校验配置。
+当前稳定版为 **v1.2.0**，需要 Go 1.25.13+。应用仍需处理读取错误，并在应用新快照前校验配置。
 
 ```sh
-go get github.com/viber-ops/configra-go@v1.1.0
+go get github.com/viber-ops/configra-go@v1.2.0
 ```
 
 ## 默认从环境开始
@@ -68,7 +61,7 @@ key_file: /run/secrets/client.key
 
 更新 `TLSConfig.GetClientCertificate` 返回的证书后，可以调用 `CloseIdleConnections()` 关闭空闲连接；它不会中断进行中的请求，忙碌的 HTTP/2 连接也可能继续使用旧身份。需要立即切换身份时，应停止旧调用并换用新 Client。更换 Token 同样需要新建 Client。
 
-[完整示例](https://github.com/viber-ops/configra-go/blob/v1.1.0/examples/basic/main.go) · [初始化、读取与 Viper 指南](https://viber-ops.github.io/docs/configra/go-sdk/)
+[完整示例](https://github.com/viber-ops/configra-go/blob/v1.2.0/examples/basic/main.go) · [初始化、读取与 Viper 指南](https://viber-ops.github.io/docs/configra/go-sdk/)
 
 ## 许可证
 
@@ -126,3 +119,35 @@ go run ./examples/operator -environment testing -namespace deployment \
 请在私密目录解压；其中 ca.crt 是客户端签发信任根，不一定是 HTTPS 服务端 CA。
 旧读取方法和 Viper Handler 兼容旧服务端。Configra 仓库的 `make test-integration`
 会在真实 MySQL 8.0.22/NATS/ClickHouse + HTTPS/mTLS 上执行此示例。
+
+## 整套发布与生效前校验（服务端 v1.2.0+）
+
+`PrepareRelease` 保存固定 Config/Vault/File 版本的不可变清单；`ActivateRelease`
+检查预期代数后切换，也用于回滚旧 key。`ReadRelease` 一次读取整套内容，空 key
+跟随活动发布流；`ReadReleaseState` 返回无秘密值的 key/代数。旧 Config/File 接口
+继续读取当前值，不能据此声称多次调用具有同一发布快照。
+
+`ViperHandlerOptions.UseRelease=true` 显式启用完整发布模式。
+`Snapshot.Files()` 返回独立字节副本，`ReleaseKey()`/`ReleaseGeneration()` 标识
+当前发布，包括只改文件的切换。[可运行示例](examples/releases/main.go) 需要 Config
+中的 `port` 和 `secrets/signing.key` 文件成员；提供常规 Token/TLS 设置以及
+`CONFIGRA_ENVIRONMENT`、`CONFIGRA_CONFIG` 后执行 `go run ./examples/releases`。
+发布集最多 32 个成员（含 Config）、共 5 MiB 解码内容；MaxContentBytes 可进一步
+收紧整个批次的限制。
+
+`Validate` 在首次 Load 和变更 Reload 安装快照前运行。拒绝仅返回不含值的
+`ErrSnapshotRejected`，保留旧 Snapshot/ETag，不触发 OnChange。校验器应无副作用、
+响应取消且不重入 Handler。OnChange 仍发生在安装之后，不能撤销已安装快照。
+`Status()` 提供最近检查/成功刷新、连续失败和安全错误码，不证明应用回调成功；
+请接入应用既有监控并定义最大可接受陈旧时间。
+
+`ReadIdentity` 和 writer 的 `ListDeploymentCredentials` 提供权限、上级身份、
+有效期及部署凭据清单。`APIError.RetryAfter` 保留有界数字重试提示；写操作不会
+自动换 ID 重试。不嵌入 SDK 的 operator 可使用服务发行包中的 Cobra CLI `configractl`。
+
+## 从 v1.1.0 升级
+
+原有读写和 OnChange 语义兼容；新接口要求服务端 v1.2.0/schema 4。先升级服务，
+准备并激活首个发布集，再启用 UseRelease。尚无活动发布集时 Load 明确失败，不会
+偷偷退回独立当前值读取。SDK 继续只需机器 Token/TLS，不需要管理员、数据库账号
+或 Master Key。参阅 [服务端升级步骤](https://github.com/viber-ops/configra/blob/v1.2.0/docs/releases/v1.2.0.md)。
