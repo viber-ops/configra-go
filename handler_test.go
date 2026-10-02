@@ -151,6 +151,60 @@ func TestViperHandlerLoadsReloadsAndRetainsLastKnownGood(t *testing.T) {
 	}
 }
 
+func TestViperHandlerRejectsInvalidBusinessValuesBeforeInstallation(t *testing.T) {
+	state := &resolvedState{}
+	state.set("yaml", "port: -1\n", 1, `"revision-1"`)
+	server := httptest.NewTLSServer(state)
+	defer server.Close()
+	client, err := NewClient(ClientOptions{BaseURL: server.URL, Token: testToken(), TLSConfig: trustServer(server)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbacks := 0
+	handler, err := NewViperHandler(ViperHandlerOptions{
+		Client: client, Environment: "a", Config: "payment",
+		Validate: func(_ context.Context, snapshot *Snapshot) error {
+			var config struct{ Port int }
+			if err := snapshot.Unmarshal(&config); err != nil {
+				return err
+			}
+			if config.Port < 1 || config.Port > 65535 {
+				return errors.New("private-validator-sentinel")
+			}
+			return nil
+		},
+		OnChange: func(context.Context, *Snapshot, *Snapshot) error { callbacks++; return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.Load(context.Background()); !errors.Is(err, ErrSnapshotRejected) || handler.Current() != nil {
+		t.Fatalf("invalid initial value was installed: %v", err)
+	}
+	if status := handler.Status(); status.ConsecutiveFailures != 1 || !status.LastSuccessAt.IsZero() || status.LastErrorCode != "validation_rejected" {
+		t.Fatalf("initial rejection status: %+v", status)
+	}
+	state.set("yaml", "port: 8080\n", 2, `"revision-2"`)
+	if _, err := handler.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	good := handler.Current()
+	state.set("yaml", "port: -1\n", 3, `"revision-3"`)
+	if changed, err := handler.Reload(context.Background()); changed || err != ErrSnapshotRejected || handler.Current() != good || callbacks != 0 {
+		t.Fatalf("invalid replacement affected current state: changed=%v error=%v callbacks=%d", changed, err, callbacks)
+	}
+	state.set("yaml", "port: 8081\n", 4, `"revision-4"`)
+	if changed, err := handler.Reload(context.Background()); !changed || err != nil || callbacks != 1 {
+		t.Fatalf("recovery: %v %v", changed, err)
+	}
+	if changed, err := handler.Reload(context.Background()); changed || err != nil {
+		t.Fatalf("unchanged: %v %v", changed, err)
+	}
+	if status := handler.Status(); status.LastSuccessAt.IsZero() || status.LastAttemptAt.Before(status.LastSuccessAt) || status.ConsecutiveFailures != 0 || status.LastErrorCode != "" || status.ConfigRevision != 4 {
+		t.Fatalf("recovered status: %+v", status)
+	}
+}
+
 func TestViperHandlerInstallsBeforeReportingCallbackFailure(t *testing.T) {
 	state := &resolvedState{}
 	state.set("json", `{"feature":{"enabled":false}}`, 1, `"revision-1"`)

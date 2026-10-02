@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -75,6 +76,7 @@ type APIError struct {
 	StatusCode int
 	Code       string
 	RequestID  string
+	RetryAfter time.Duration
 }
 
 func (err *APIError) Error() string {
@@ -272,7 +274,7 @@ func (client *Client) get(ctx context.Context, path, etag string) (*http.Respons
 
 func (client *Client) do(ctx context.Context, method, path string, body io.Reader, operationID, etag string) (*http.Response, error) {
 	endpoint := *client.baseURL
-	endpoint.Path = path
+	endpoint.Path, endpoint.RawQuery, _ = strings.Cut(path, "?")
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
 	if err != nil {
 		return nil, errors.New("create Configra request")
@@ -295,9 +297,13 @@ func (client *Client) do(ctx context.Context, method, path string, body io.Reade
 }
 
 func decodeAPIError(response *http.Response) error {
+	retryAfter := time.Duration(0)
+	if seconds, err := strconv.ParseInt(response.Header.Get("Retry-After"), 10, 32); err == nil && seconds > 0 && seconds <= 86400 {
+		retryAfter = time.Duration(seconds) * time.Second
+	}
 	payload, err := readLimited(response.Body, maxErrorBytes)
 	if err != nil {
-		return &APIError{StatusCode: response.StatusCode, Code: "unexpected_response"}
+		return &APIError{StatusCode: response.StatusCode, Code: "unexpected_response", RetryAfter: retryAfter}
 	}
 	var envelope struct {
 		Error struct {
@@ -306,9 +312,9 @@ func decodeAPIError(response *http.Response) error {
 		} `json:"error"`
 	}
 	if decodeOneJSON(payload, &envelope) != nil || !validErrorCode(envelope.Error.Code) || !validRequestID(envelope.Error.RequestID) {
-		return &APIError{StatusCode: response.StatusCode, Code: "unexpected_response"}
+		return &APIError{StatusCode: response.StatusCode, Code: "unexpected_response", RetryAfter: retryAfter}
 	}
-	return &APIError{StatusCode: response.StatusCode, Code: envelope.Error.Code, RequestID: envelope.Error.RequestID}
+	return &APIError{StatusCode: response.StatusCode, Code: envelope.Error.Code, RequestID: envelope.Error.RequestID, RetryAfter: retryAfter}
 }
 
 func decodeOneJSON(payload []byte, target any) error {

@@ -23,6 +23,8 @@ var (
 	ErrReloadRunning = errors.New("Configra Reload callback is already running")
 	// ErrWatchRunning means Watch is already active for this Handler.
 	ErrWatchRunning = errors.New("Configra Watch is already running")
+	// ErrSnapshotRejected does not expose values or errors returned by a validator.
+	ErrSnapshotRejected = errors.New("Configra Snapshot rejected by validation")
 )
 
 // ChangeCallback observes a serialized transition between immutable Snapshots.
@@ -36,6 +38,10 @@ type ViperHandlerOptions struct {
 	WatchInterval time.Duration
 	OnChange      ChangeCallback
 	OnError       func(error)
+	// Validate runs before initial Load and each changed Snapshot is installed.
+	// It must be side-effect-free, honor cancellation and not reenter this Handler.
+	// Rejections retain Current/ETag and return only ErrSnapshotRejected.
+	Validate func(context.Context, *Snapshot) error
 }
 
 // ViperHandler maintains the last valid immutable Config Snapshot.
@@ -46,6 +52,9 @@ type ViperHandler struct {
 	watchInterval time.Duration
 	onChange      ChangeCallback
 	onError       func(error)
+	validate      func(context.Context, *Snapshot) error
+	statusMu      sync.Mutex
+	status        HandlerStatus
 	current       atomic.Pointer[Snapshot]
 	reloadMu      sync.Mutex
 	changeRunning atomic.Bool
@@ -82,6 +91,7 @@ func NewViperHandler(options ViperHandlerOptions) (*ViperHandler, error) {
 		watchInterval: interval,
 		onChange:      options.OnChange,
 		onError:       options.OnError,
+		validate:      options.Validate,
 		wait:          waitContext,
 		jitter: func(duration time.Duration) time.Duration {
 			return time.Duration(float64(duration) * (0.9 + rand.Float64()*0.2))
@@ -90,7 +100,7 @@ func NewViperHandler(options ViperHandlerOptions) (*ViperHandler, error) {
 }
 
 // Load fetches and installs the required initial Snapshot without invoking OnChange.
-func (handler *ViperHandler) Load(ctx context.Context) (*Snapshot, error) {
+func (handler *ViperHandler) Load(ctx context.Context) (snapshot *Snapshot, resultErr error) {
 	if handler == nil || ctx == nil {
 		return nil, errors.New("Configra Viper Handler and Context are required")
 	}
@@ -99,11 +109,12 @@ func (handler *ViperHandler) Load(ctx context.Context) (*Snapshot, error) {
 	if handler.current.Load() != nil {
 		return nil, ErrAlreadyLoaded
 	}
+	defer func() { handler.observe(resultErr) }()
 	resolved, err := handler.client.ReadResolvedConfig(ctx, handler.environment, handler.config, "")
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := newSnapshot(resolved)
+	snapshot, err = handler.validatedSnapshot(ctx, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -179,6 +190,7 @@ func (handler *ViperHandler) reloadLocked(ctx context.Context) (changed, success
 	if previous == nil {
 		return false, false, nil, nil, ErrNotLoaded
 	}
+	defer func() { handler.observe(resultErr) }()
 	resolved, err := handler.client.ReadResolvedConfig(ctx, handler.environment, handler.config, previous.etag)
 	if errors.Is(err, ErrNotModified) {
 		return false, true, nil, nil, nil
@@ -186,7 +198,7 @@ func (handler *ViperHandler) reloadLocked(ctx context.Context) (changed, success
 	if err != nil {
 		return false, false, nil, nil, err
 	}
-	current, err = newSnapshot(resolved)
+	current, err = handler.validatedSnapshot(ctx, resolved)
 	if err != nil {
 		return false, false, nil, nil, err
 	}
@@ -195,6 +207,76 @@ func (handler *ViperHandler) reloadLocked(ctx context.Context) (changed, success
 	}
 	handler.current.Store(current)
 	return true, true, previous, current, nil
+}
+
+// HandlerStatus reports fetch/validation health, including successful 304 checks.
+// LastSuccessAt does not attest that the application's OnChange work succeeded.
+// All error codes are value-free. Times describe the completion of each check.
+type HandlerStatus struct {
+	LastAttemptAt       time.Time `json:"last_attempt_at"`
+	LastSuccessAt       time.Time `json:"last_success_at"`
+	ConsecutiveFailures uint64    `json:"consecutive_failures"`
+	LastErrorCode       string    `json:"last_error_code,omitempty"`
+	ConfigRevision      uint64    `json:"config_revision"`
+}
+
+func (handler *ViperHandler) Status() HandlerStatus {
+	if handler == nil {
+		return HandlerStatus{}
+	}
+	handler.statusMu.Lock()
+	defer handler.statusMu.Unlock()
+	return handler.status
+}
+
+func (handler *ViperHandler) observe(err error) {
+	handler.statusMu.Lock()
+	defer handler.statusMu.Unlock()
+	handler.status.LastAttemptAt = time.Now().UTC()
+	if current := handler.current.Load(); current != nil {
+		handler.status.ConfigRevision = current.ConfigRevision()
+	}
+	if err == nil {
+		handler.status.LastSuccessAt = handler.status.LastAttemptAt
+		handler.status.ConsecutiveFailures = 0
+		handler.status.LastErrorCode = ""
+		return
+	}
+	handler.status.ConsecutiveFailures++
+	handler.status.LastErrorCode = "fetch_failed"
+	var api *APIError
+	switch {
+	case errors.Is(err, ErrSnapshotRejected):
+		handler.status.LastErrorCode = "validation_rejected"
+	case errors.Is(err, context.Canceled):
+		handler.status.LastErrorCode = "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		handler.status.LastErrorCode = "timeout"
+	case errors.Is(err, ErrReloadRunning):
+		handler.status.LastErrorCode = "callback_running"
+	case errors.As(err, &api):
+		handler.status.LastErrorCode = api.Code
+	}
+}
+
+func (handler *ViperHandler) validatedSnapshot(ctx context.Context, resolved ResolvedConfig) (*Snapshot, error) {
+	snapshot, err := newSnapshot(resolved)
+	if err != nil {
+		return nil, err
+	}
+	if handler.validate != nil {
+		validationErr := handler.validate(ctx, snapshot)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if validationErr != nil {
+			return nil, ErrSnapshotRejected
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
 }
 
 func (handler *ViperHandler) notifyChange(ctx context.Context, previous, current *Snapshot) error {

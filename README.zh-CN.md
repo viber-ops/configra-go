@@ -1,5 +1,12 @@
 # configra-go
 
+开发版新增：`ViperHandlerOptions.Validate` 在初次 Load/变更 Reload 安装前执行业务
+校验；失败仅返回不含值的 `ErrSnapshotRejected`，保留原 Snapshot/ETag，不调用
+OnChange。校验函数应无副作用、响应取消，且不重入 Handler。`Status()` 提供最近
+检查/成功刷新与连续失败状态，不代表应用回调已经执行成功。`ReadIdentity`、writer
+专用 `ListDeploymentCredentials` 提供无值身份/到期/部署凭据清单，需配套服务端新
+接口。`APIError.RetryAfter` 保留有界数字重试提示；不会自动换一个 ID 重试写入。
+
 **在 Go 应用里读取 Configra，不必自己初始化 TLS 和连接池。**
 
 [产品网站](https://viber-ops.github.io/configra/) · [SDK 文档](https://viber-ops.github.io/docs/configra/go-sdk/) · [English](README.md)

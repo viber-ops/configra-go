@@ -1,5 +1,15 @@
 # configra-go
 
+Development additions: `ViperHandlerOptions.Validate` checks a candidate before
+Load/Reload installs it. Rejection returns value-free `ErrSnapshotRejected`, keeps
+the previous Snapshot/ETag and skips OnChange. The validator must be side-effect-free,
+respect cancellation and must not reenter the Handler. `Status()` reports the
+last completed check, accepted/unchanged fetch and consecutive failures; it does
+not attest application callback success. `ReadIdentity` and the scoped writer's
+`ListDeploymentCredentials` expose value-free lifecycle metadata and require the
+corresponding new server endpoints. `APIError.RetryAfter` exposes bounded numeric
+retry hints; mutations are not automatically retried with a different identity.
+
 **Read Configra configuration and automate scoped writes from Go.**
 
 [Configra](https://viber-ops.github.io/en/configra/) ·
